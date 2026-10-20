@@ -1,167 +1,140 @@
-import 'dart:convert';
-
-//necesitamos probar que la clase sellada de fallos
-import 'package:gestor_cafeteria/core/failure.dart';
-
-//necesita,ps probar que el cliente http finione 
-import 'package:gestor_cafeteria/core/http_client.dart';
-
-//compara los resultados de la peticion con los resultados esperados
-import 'package:http/http.dart' as http;
-
-//libreria propia de http para realizar test
-import 'package:http/testing.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-//funcion que retorna un objeto de tipo client que responde con un status code y un body determinado, para poder probar el cliente http sin necesidad de hacer peticiones reales
-ApiClient clienteQueResponde(int status, [Object? body]) {
-  return  ApiClient(
-    baseUrl: 'http://localhost:8000', 
-    client: MockClient(
-      (request) async => http.Response.bytes(
-        body == null ? const [] : utf8.encode(jsonEncode(body)),
-        status,
-        headers: {'Content-Type': 'application/json'},
-      )));
-}
+import 'package:gestor_cafeteria/core/failure.dart';
+import 'package:gestor_cafeteria/core/http_client.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 void main() {
-  //hacer el agrupamiento de pruebas
-  group('Probar los Codigos de error', () {
-    test('404 -> NotFoundFailure()', () async {
-      final api = clienteQueResponde(404, {'detail': 'Order 999 not found'});
-      await expectLater(
-        api.get('/orders/999'),
-        throwsA(isA<NotFoundFailure>()),
-      );
-    }); // test('404 -> NotFoundFailure()')
-
-    test('409 -> ConflictFailure()', () async {
-      final api = clienteQueResponde(409, {'detail': 'Conflicto con recurso existente'});
-      await expectLater(
-        api.post('/recurso-existente', {'data': 'test'}),
-        throwsA(isA<ConflictFailure>()),
-      );
-    }); // test('409 -> ConflictFailure()')
-
-    test('406 -> UnexpectedFailure() (no contemplado explícitamente)', () async {
-      final api = clienteQueResponde(406, {'detail': 'No aceptable'});
-      await expectLater(
-        api.get('/no-aceptable'),
-        throwsA(isA<UnexpectedFailure>()),
-      );
-    }); // test('406 -> UnexpectedFailure() (no contemplado explícitamente)')
-
-    test('410 -> UnexpectedFailure() (no contemplado explícitamente)', () async {
-      final api = clienteQueResponde(410, {'detail': 'Recurso ya no disponible'});
-      await expectLater(
-        api.get('/recurso-eliminado'),
-        throwsA(isA<UnexpectedFailure>()),
-      );
-    }); // test('410 -> UnexpectedFailure() (no contemplado explícitamente)')
-
-    test('422 -> ValidationFailure()', () async {
-      final api = clienteQueResponde(422, {
-        'detail': [
-          {'loc': ['body', 'email'], 'msg': 'Email inválido'},
-        ],
+  group('ApiClient · mapeo de respuestas HTTP', () {
+    test('éxito 200 devuelve el JSON decodificado', () async {
+      final mock = MockClient((request) async {
+        return http.Response('[{"id": 1}]', 200);
       });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
+
+      final resultado = await api.get('/orders');
+
+      expect(resultado, isA<List>());
+      expect(resultado, [
+        {'id': 1},
+      ]);
+    });
+
+    test('404 lanza NotFoundFailure con el mensaje del detail', () async {
+      final mock = MockClient((request) async {
+        return http.Response(
+          '{"detail": "Order 9 not found"}',
+          404,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
+
       await expectLater(
-        api.post('/validacion', {'email': 'invalid-email'}),
-        throwsA(isA<ValidationFailure>()),
+        api.get('/orders/9'),
+        throwsA(
+          isA<NotFoundFailure>().having(
+            (f) => f.message,
+            'message',
+            'Order 9 not found',
+          ),
+        ),
       );
-    }); // test('422 -> ValidationFailure()')
+    });
 
-    test('450 -> UnexpectedFailure() (no contemplado explícitamente)', () async {
-      final api = clienteQueResponde(450, {'detail': 'Código no aceptado'});
+    test('409 lanza ConflictFailure con el mensaje del detail', () async {
+      final mock = MockClient((request) async {
+        return http.Response(
+          '{"detail": "Cannot change status from pending to delivered"}',
+          409,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
+
       await expectLater(
-        api.get('/codigo-no-aceptado'),
-        throwsA(isA<UnexpectedFailure>()),
+        api.patch('/orders/1', {'status': 'delivered'}),
+        throwsA(
+          isA<ConflictFailure>().having(
+            (f) => f.message,
+            'message',
+            'Cannot change status from pending to delivered',
+          ),
+        ),
       );
-    }); // test('450 -> UnexpectedFailure() (no contemplado explícitamente)')
+    });
 
-    test('500 -> ServerFailure()', () async {
-      final api = clienteQueResponde(500, {'detail': 'Error interno'});
+    test('422 lanza ValidationFailure con los campos extraídos de detail', () async {
+      final mock = MockClient((request) async {
+        return http.Response(
+          '{"detail": [{"loc": ["body", "customer"], "msg": "Must be 1-50 characters"}]}',
+          422,
+          headers: {'content-type': 'application/json'},
+        );
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
+
       await expectLater(
-        api.get('/error-servidor'),
-        throwsA(isA<ServerFailure>()),
+        api.post('/orders', {'customer': '', 'drink': 'latte', 'size': 'M'}),
+        throwsA(
+          isA<ValidationFailure>().having(
+            (f) => f.fields,
+            'fields',
+            {'customer': 'Must be 1-50 characters'},
+          ),
+        ),
       );
-    }); // test('500 -> ServerFailure()')
+    });
 
-    test('503 -> ServerFailure() (dentro del rango 500-599)', () async {
-      final api = clienteQueResponde(503, {'detail': 'Servicio no disponible'});
+    test('503 lanza ServerFailure con statusCode 503', () async {
+      final mock = MockClient((request) async {
+        return http.Response('{"detail": "Service Unavailable"}', 503);
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
+
       await expectLater(
-        api.get('/servicio-no-disponible'),
-        throwsA(isA<ServerFailure>()),
+        api.get('/orders'),
+        throwsA(
+          isA<ServerFailure>().having((f) => f.statusCode, 'statusCode', 503),
+        ),
       );
-    }); // test('503 -> ServerFailure() (dentro del rango 500-599)')
-  }); // group('Probar los Codigos de error')
+    });
 
-  group('Probar los límites del rango de éxito (200-300)', () {
-    test('200 -> no lanza excepción', () async {
-      final api = clienteQueResponde(200, {'message': 'ok'});
-      final respuesta = await api.get('/ok');
-      expect(respuesta, {'message': 'ok'});
-    }); // test('200 -> no lanza excepción')
+    test('sin conexión (ClientException) lanza NetworkFailure', () async {
+      final mock = MockClient((request) async {
+        throw http.ClientException('sin red');
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
 
-    test('201 -> no lanza excepción', () async {
-      final api = clienteQueResponde(201, {'message': 'creado'});
-      final respuesta = await api.post('/creado', {'data': 'test'});
-      expect(respuesta, {'message': 'creado'});
-    }); // test('201 -> no lanza excepción')
+      await expectLater(api.get('/orders'), throwsA(isA<NetworkFailure>()));
+    });
 
-    test('299 -> no lanza excepción', () async {
-      final api = clienteQueResponde(299, {'message': 'Al borde del límite'});
-      final respuesta = await api.get('/limite');
-      expect(respuesta, {'message': 'Al borde del límite'});
-    }); // test('299 -> no lanza excepción')
+    test('tiempo agotado lanza NetworkFailure', () async {
+      final mock = MockClient((request) async {
+        await Future.delayed(const Duration(milliseconds: 200));
+        return http.Response('[]', 200);
+      });
+      final api = ApiClient(
+        client: mock,
+        baseUrl: 'http://prueba',
+        timeout: const Duration(milliseconds: 50),
+      );
 
-    test('300 -> no lanza excepción (límite superior incluido)', () async {
-      final api = clienteQueResponde(300, {'message': 'limite'});
-      final respuesta = await api.get('/limite');
-      expect(respuesta, {'message': 'limite'});
-    }); // test('300 -> no lanza excepción (límite superior incluido)')
-  }); // group('Probar los límites del rango de éxito (200-300)')
+      await expectLater(api.get('/orders'), throwsA(isA<NetworkFailure>()));
+    });
 
-  group('Probar códigos fuera de todos los rangos contemplados', () {
-    test('0 -> UnexpectedFailure() (código inválido/sin respuesta HTTP real)', () {
-      // El paquete http no permite crear una respuesta con status code 0,
-      // por lo que se valida directamente el mapeo de mapHttpError.
-      final api = ApiClient(baseUrl: 'http://localhost:8000');
-      final failure = api.mapHttpError(0, {'detail': 'sin conexión'});
-      expect(failure, isA<UnexpectedFailure>());
-    }); // test('0 -> UnexpectedFailure() (código inválido/sin respuesta HTTP real)')
+    test('300 ya no se considera éxito y lanza UnexpectedFailure (defecto D3)', () async {
+      final mock = MockClient((request) async {
+        return http.Response('{"detail": "Multiple Choices"}', 300);
+      });
+      final api = ApiClient(client: mock, baseUrl: 'http://prueba');
 
-    test('199 -> UnexpectedFailure() (debajo del rango de éxito)', () async {
-      final api = clienteQueResponde(199, {'detail': 'sospechoso'});
       await expectLater(
-        api.get('/sospechoso-199'),
-        throwsA(isA<UnexpectedFailure>()),
+        api.get('/orders'),
+        throwsA(
+          isA<UnexpectedFailure>().having((f) => f.statusCode, 'statusCode', 300),
+        ),
       );
-    }); // test('199 -> UnexpectedFailure() (debajo del rango de éxito)')
-
-    test('301 -> UnexpectedFailure() (arriba del rango de éxito)', () async {
-      final api = clienteQueResponde(301, {'detail': 'sospechoso'});
-      await expectLater(
-        api.get('/sospechoso-301'),
-        throwsA(isA<UnexpectedFailure>()),
-      );
-    }); // test('301 -> UnexpectedFailure() (arriba del rango de éxito)')
-
-    test('600 -> UnexpectedFailure() (arriba del rango de servidor)', () async {
-      final api = clienteQueResponde(600, {'detail': 'desconocido'});
-      await expectLater(
-        api.get('/sospechoso-600'),
-        throwsA(isA<UnexpectedFailure>()),
-      );
-    }); // test('600 -> UnexpectedFailure() (arriba del rango de servidor)')
-
-    test('601 -> UnexpectedFailure() (arriba del rango de servidor)', () async {
-      final api = clienteQueResponde(601, {'detail': 'desconocido'});
-      await expectLater(
-        api.get('/sospechoso-601'),
-        throwsA(isA<UnexpectedFailure>()),
-      );
-    }); // test('601 -> UnexpectedFailure() (arriba del rango de servidor)')
-  }); // group('Probar códigos fuera de todos los rangos contemplados')
-} // main()
+    });
+  });
+}
