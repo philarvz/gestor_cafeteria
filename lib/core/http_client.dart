@@ -75,7 +75,10 @@ class ApiClient {
       409 => ConflictFailure(_detailAsString(json) ?? 'Conflicto en la solicitud'),
       422 => ValidationFailure(_fieldsFrom(json)),
       >= 500 && < 600 => ServerFailure(code),
-      _ => UnexpectedFailure(code, 'Error desconocido ($code)'),
+      _ => UnexpectedFailure(
+        code,
+        _detailAsString(json) ?? 'Error desconocido ($code)',
+      ),
     };
   }
 
