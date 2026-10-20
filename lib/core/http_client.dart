@@ -71,12 +71,19 @@ class ApiClient {
 
   Failure mapHttpError(int code, Object? json) {
     return switch (code) {
-      404 => const NotFoundFailure('Orden no encontrada'),
-      409 => const ConflictFailure('Acción no permitida'),
+      404 => NotFoundFailure(_detailAsString(json) ?? 'Recurso no encontrado'),
+      409 => ConflictFailure(_detailAsString(json) ?? 'Conflicto en la solicitud'),
       422 => ValidationFailure(_fieldsFrom(json)),
       >= 500 && < 600 => ServerFailure(code),
       _ => UnexpectedFailure(code, 'Error desconocido ($code)'),
     };
+  }
+
+  String? _detailAsString(Object? json) {
+    if (json is Map && json['detail'] is String) {
+      return json['detail'] as String;
+    }
+    return null;
   }
 
   Map<String, String> _fieldsFrom(Object? json) {
